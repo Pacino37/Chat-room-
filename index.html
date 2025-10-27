@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chat Room</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Username Prompt -->
+  <div id="username-prompt">
+    <h2>Enter Chat Room</h2>
+    <input id="username" placeholder="Enter your name" />
+    <button id="joinBtn">Join Chat</button>
+  </div>
+
+  <!-- Chat Container -->
+  <div id="chat-container" style="display:none;">
+    <h2>Chat Room</h2>
+    <ul id="messages"></ul>
+    <form id="form" action="">
+      <input id="input" autocomplete="off" placeholder="Type your message..." />
+      <button>Send</button>
+    </form>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    const usernamePrompt = document.getElementById('username-prompt');
+    const chatContainer = document.getElementById('chat-container');
+    const joinBtn = document.getElementById('joinBtn');
+    const usernameInput = document.getElementById('username');
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const messages = document.getElementById('messages');
+
+    let username = '';
+
+    // Join button logic
+    joinBtn.addEventListener('click', () => {
+      username = usernameInput.value.trim();
+      if (username) {
+        socket.emit('set username', username);
+        usernamePrompt.style.display = 'none';
+        chatContainer.style.display = 'block';
+      }
+    });
+
+    // Send message
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (input.value && username) {
+        socket.emit('chat message', input.value);
+        input.value = '';
+      }
+    });
+
+    // Receive message
+    socket.on('chat message', (msg) => {
+      const item = document.createElement('li');
+      item.innerHTML = `<strong>${msg.user}:</strong> ${msg.text}`;
+      messages.appendChild(item);
+      messages.scrollTop = messages.scrollHeight;
+    });
+
+    // System message (join/leave)
+    socket.on('system message', (msg) => {
+      const item = document.createElement('li');
+      item.textContent = msg;
+      item.style.fontStyle = 'italic';
+      item.style.color = 'gray';
+      messages.appendChild(item);
+      messages.scrollTop = messages.scrollHeight;
+    });
+  </script>
+</body>
+</html>
