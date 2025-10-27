@@ -1,6 +1,7 @@
 {
   "name": "chat-room",
   "version": "1.0.0",
+  "description": "A simple real-time chat room using Node.js, Express, and Socket.IO",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

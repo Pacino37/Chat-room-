@@ -2,78 +2,271 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Chat Room</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chat + Video Room</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Username Prompt -->
-  <div id="username-prompt">
-    <h2>Enter Chat Room</h2>
-    <input id="username" placeholder="Enter your name" />
-    <button id="joinBtn">Join Chat</button>
-  </div>
+  <div id="chat-wrapper">
+    <!-- Authentication Section -->
+    <div id="auth-container">
+      <h2>Join Room</h2>
+      <input id="username" placeholder="Enter your name">
+      <input id="roomId" placeholder="Room name" value="main-room">
+      <button id="joinBtn">Join Room</button>
+      <hr>
+      <input id="adminPass" placeholder="Admin password">
+      <button id="adminLogin">Login as Admin</button>
+    </div>
 
-  <!-- Chat Container -->
-  <div id="chat-container" style="display:none;">
-    <h2>Chat Room</h2>
-    <ul id="messages"></ul>
-    <form id="form" action="">
-      <input id="input" autocomplete="off" placeholder="Type your message..." />
-      <button>Send</button>
-    </form>
+    <!-- Main Interface -->
+    <div id="main" style="display:none;">
+      <div id="left">
+        <h2>Chat Room</h2>
+        <div id="messages" class="box"></div>
+        <div id="message-input-area">
+          <input id="messageInput" type="text" placeholder="Type a message..." autocomplete="off" />
+          <button id="sendBtn">Send</button>
+        </div>
+
+        <div id="controls" class="box">
+          <button id="startVideoBtn">🎥 Start Video</button>
+          <button id="stopVideoBtn" style="display:none;">⛔ Stop Video</button>
+          <button id="raiseHandBtn">✋ Raise Hand</button>
+          <button id="muteBtn">🔇 Mute/Unmute</button>
+          <button id="videoBtn">📷 Video On/Off</button>
+          <label><input id="videoToggle" type="checkbox" checked/> Video</label>
+          <label><input id="audioToggle" type="checkbox" checked/> Audio</label>
+        </div>
+
+        <!-- Admin controls -->
+        <div id="adminControls" class="box" style="display:none;">
+          <h3>Administrator</h3>
+          <button id="adminDisableVideo">Disable All Video</button>
+          <button id="adminEnableAudio">Enable Audio</button>
+          <button id="muteAllBtn">Mute All</button>
+          <ul id="userList"></ul>
+        </div>
+      </div>
+
+      <div id="right">
+        <h2>Participants</h2>
+        <div id="videos" class="videos-grid"></div>
+      </div>
+    </div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-
-    const usernamePrompt = document.getElementById('username-prompt');
-    const chatContainer = document.getElementById('chat-container');
-    const joinBtn = document.getElementById('joinBtn');
     const usernameInput = document.getElementById('username');
-    const form = document.getElementById('form');
-    const input = document.getElementById('input');
-    const messages = document.getElementById('messages');
+    const roomIdInput = document.getElementById('roomId');
+    const joinBtn = document.getElementById('joinBtn');
+    const adminPassInput = document.getElementById('adminPass');
+    const adminLoginBtn = document.getElementById('adminLogin');
+    const authContainer = document.getElementById('auth-container');
+    const mainUI = document.getElementById('main');
+    const messagesDiv = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const videosEl = document.getElementById('videos');
+    const adminControls = document.getElementById('adminControls');
+    const adminDisableVideo = document.getElementById('adminDisableVideo');
+    const adminEnableAudio = document.getElementById('adminEnableAudio');
+    const muteAllBtn = document.getElementById('muteAllBtn');
+    const userList = document.getElementById('userList');
+
+    const startVideoBtn = document.getElementById('startVideoBtn');
+    const stopVideoBtn = document.getElementById('stopVideoBtn');
+    const raiseHandBtn = document.getElementById('raiseHandBtn');
+    const muteBtn = document.getElementById('muteBtn');
+    const videoBtn = document.getElementById('videoBtn');
+    const videoToggle = document.getElementById('videoToggle');
+    const audioToggle = document.getElementById('audioToggle');
 
     let username = '';
+    let roomId = '';
+    let mySocketId = null;
+    let isAdmin = false;
+    let localStream = null;
+    const pcs = {};
+    const remoteVideoEls = {};
+    const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-    // Join button logic
-    joinBtn.addEventListener('click', () => {
-      username = usernameInput.value.trim();
-      if (username) {
-        socket.emit('set username', username);
-        usernamePrompt.style.display = 'none';
-        chatContainer.style.display = 'block';
+    // -------- JOIN ROOM --------
+    joinBtn.onclick = () => {
+      username = usernameInput.value.trim() || 'guest' + Math.floor(Math.random() * 1000);
+      roomId = roomIdInput.value.trim() || 'main-room';
+      socket.emit('set username', { username, roomId });
+      authContainer.style.display = 'none';
+      mainUI.style.display = 'flex';
+    };
+
+    adminLoginBtn.onclick = () => {
+      if (adminPassInput.value === 'admin123') { // change password as needed
+        isAdmin = true;
+        authContainer.style.display = 'none';
+        mainUI.style.display = 'flex';
+        adminControls.style.display = 'block';
+        socket.emit('admin-login', roomId);
+      } else alert('Wrong admin password');
+    };
+
+    // -------- CHAT --------
+    sendBtn.onclick = sendMessage;
+    messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+    function sendMessage() {
+      const text = messageInput.value.trim();
+      if (!text) return;
+      socket.emit('chat message', { text, roomId });
+      messageInput.value = '';
+    }
+    socket.on('chat message', (msg) => appendMessage(`${msg.user}: ${msg.text}`));
+    socket.on('system message', (msg) => appendMessage(`* ${msg}`));
+    function appendMessage(text) {
+      const div = document.createElement('div');
+      div.className = 'message';
+      div.textContent = text;
+      messagesDiv.appendChild(div);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // -------- VIDEO CONTROL --------
+    startVideoBtn.onclick = startLocalMediaAndJoin;
+    stopVideoBtn.onclick = stopAllMedia;
+    videoToggle.onchange = () => { if (localStream) localStream.getVideoTracks()[0].enabled = videoToggle.checked; };
+    audioToggle.onchange = () => { if (localStream) localStream.getAudioTracks()[0].enabled = audioToggle.checked; };
+
+    muteBtn.onclick = () => {
+      if (localStream) {
+        const track = localStream.getAudioTracks()[0];
+        if (track) track.enabled = !track.enabled;
+      }
+    };
+    videoBtn.onclick = () => {
+      if (localStream) {
+        const track = localStream.getVideoTracks()[0];
+        if (track) track.enabled = !track.enabled;
+      }
+    };
+
+    raiseHandBtn.onclick = () => {
+      socket.emit('raise-hand', { username, roomId });
+    };
+    socket.on('raise-hand', (data) => appendMessage(`✋ ${data.username} raised their hand.`));
+
+    async function startLocalMediaAndJoin() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        addLocalVideoElement();
+        socket.emit('join-room', roomId);
+        startVideoBtn.style.display = 'none';
+        stopVideoBtn.style.display = 'inline-block';
+      } catch (err) {
+        alert('Camera/microphone access denied.');
+      }
+    }
+
+    function stopAllMedia() {
+      Object.values(pcs).forEach(pc => pc.close());
+      Object.values(remoteVideoEls).forEach(v => v.remove());
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+      const localEl = document.getElementById('local-' + mySocketId);
+      if (localEl) localEl.remove();
+      startVideoBtn.style.display = 'inline-block';
+      stopVideoBtn.style.display = 'none';
+    }
+
+    function addLocalVideoElement() {
+      if (!mySocketId) return;
+      let el = document.getElementById('local-' + mySocketId);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'participant';
+        el.id = 'local-' + mySocketId;
+        el.innerHTML = `<div class="name">You (${username})</div><video autoplay playsinline muted></video>`;
+        videosEl.prepend(el);
+      }
+      el.querySelector('video').srcObject = localStream;
+    }
+
+    // -------- WEBRTC SIGNALING --------
+    socket.on('connect', () => mySocketId = socket.id);
+
+    socket.on('all-users', async (ids) => {
+      for (const id of ids) {
+        if (id !== mySocketId) await createPeerAndOffer(id);
       }
     });
 
-    // Send message
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      if (input.value && username) {
-        socket.emit('chat message', input.value);
-        input.value = '';
+    socket.on('user-joined', async (id) => { await createPeerAndOffer(id); });
+
+    async function createPeerAndOffer(remoteId) {
+      const pc = new RTCPeerConnection(servers);
+      pcs[remoteId] = pc;
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      createRemoteVideoEl(remoteId);
+      pc.onicecandidate = e => { if (e.candidate) socket.emit('ice-candidate', { to: remoteId, candidate: e.candidate }); };
+      pc.ontrack = e => remoteVideoEls[remoteId].querySelector('video').srcObject = e.streams[0];
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('offer', { to: remoteId, sdp: offer });
+    }
+
+    socket.on('offer', async ({ from, sdp }) => {
+      const pc = new RTCPeerConnection(servers);
+      pcs[from] = pc;
+      pc.onicecandidate = e => { if (e.candidate) socket.emit('ice-candidate', { to: from, candidate: e.candidate }); };
+      pc.ontrack = e => remoteVideoEls[from].querySelector('video').srcObject = e.streams[0];
+      if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', { to: from, sdp: answer });
+    });
+
+    socket.on('answer', async ({ from, sdp }) => {
+      if (pcs[from]) await pcs[from].setRemoteDescription(new RTCSessionDescription(sdp));
+    });
+
+    socket.on('ice-candidate', async ({ from, candidate }) => {
+      if (pcs[from]) await pcs[from].addIceCandidate(new RTCIceCandidate(candidate));
+    });
+
+    socket.on('user-left', id => {
+      if (pcs[id]) pcs[id].close();
+      delete pcs[id];
+      if (remoteVideoEls[id]) remoteVideoEls[id].remove();
+      delete remoteVideoEls[id];
+    });
+
+    function createRemoteVideoEl(id) {
+      if (remoteVideoEls[id]) return;
+      const el = document.createElement('div');
+      el.className = 'participant';
+      el.id = 'remote-' + id;
+      el.innerHTML = `<div class="name">User: ${id}</div><video autoplay playsinline></video>`;
+      videosEl.appendChild(el);
+      remoteVideoEls[id] = el;
+    }
+
+    // -------- ADMIN ACTIONS --------
+    adminDisableVideo.onclick = () => socket.emit('admin-action', { type: 'disable-video', roomId });
+    adminEnableAudio.onclick = () => socket.emit('admin-action', { type: 'enable-audio', roomId });
+    muteAllBtn.onclick = () => socket.emit('admin-action', { type: 'mute-all', roomId });
+
+    socket.on('admin-action', async (action) => {
+      if (action.type === 'disable-video' && localStream) {
+        const v = localStream.getVideoTracks()[0]; if (v) v.enabled = false;
+      } else if (action.type === 'mute-all' && localStream) {
+        const a = localStream.getAudioTracks()[0]; if (a) a.enabled = false;
+      } else if (action.type === 'enable-audio' && localStream) {
+        const a = localStream.getAudioTracks()[0]; if (a) a.enabled = true;
       }
     });
 
-    // Receive message
-    socket.on('chat message', (msg) => {
-      const item = document.createElement('li');
-      item.innerHTML = `<strong>${msg.user}:</strong> ${msg.text}`;
-      messages.appendChild(item);
-      messages.scrollTop = messages.scrollHeight;
-    });
-
-    // System message (join/leave)
-    socket.on('system message', (msg) => {
-      const item = document.createElement('li');
-      item.textContent = msg;
-      item.style.fontStyle = 'italic';
-      item.style.color = 'gray';
-      messages.appendChild(item);
-      messages.scrollTop = messages.scrollHeight;
-    });
+    socket.on('connect_error', err => console.error('Connection error', err));
   </script>
 </body>
 </html>
