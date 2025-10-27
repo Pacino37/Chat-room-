@@ -568,4 +568,8 @@
 
   </script>
 </body>
+<<<<<<< HEAD
 </html>
+=======
+</html>
+>>>>>>> 3d4b6f1e6b6ca6dd341c6e77f99ca3fddda28f87
