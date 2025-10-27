@@ -1,0 +1,25 @@
+{
+  "name": "chat-room-",
+  "version": "1.0.0",
+  "description": "Market area, Barter trading",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pacino37/Chat-room-.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Pacino37/Chat-room-/issues"
+  },
+  "homepage": "https://github.com/Pacino37/Chat-room-#readme",
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  }
+}
