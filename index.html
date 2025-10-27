@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Chat Room</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chat + Multi-User Video</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -15,72 +15,346 @@
       <button id="joinBtn">Join Chat</button>
     </div>
 
-    <!-- Chat Container -->
-    <div id="chat-container" style="display: none;">
-      <h2>Chat Room</h2>
-      <div id="messages"></div>
-      <div id="message-input-area">
-        <input id="messageInput" type="text" placeholder="Type a message..." autocomplete="off" />
-        <button id="sendBtn">Send</button>
+    <!-- Main UI -->
+    <div id="main" style="display:none;">
+      <div id="left">
+        <h2>Chat Room</h2>
+        <div id="messages" class="box"></div>
+        <div id="message-input-area">
+          <input id="messageInput" type="text" placeholder="Type a message..." autocomplete="off" />
+          <button id="sendBtn">Send</button>
+        </div>
+
+        <div id="controls" class="box">
+          <button id="startVideoBtn">Start Video Chat</button>
+          <button id="stopVideoBtn" style="display:none;">Stop Video Chat</button>
+          <label><input id="videoToggle" type="checkbox" checked/> Video</label>
+          <label><input id="audioToggle" type="checkbox" checked/> Audio</label>
+        </div>
+
+        <!-- Admin controls (visible only to admin) -->
+        <div id="adminControls" class="box" style="display:none;">
+          <h3>Administrator</h3>
+          <button id="adminDisableVideo">Disable All Video</button>
+          <button id="adminEnableAudio">Request/Enable Audio</button>
+        </div>
+      </div>
+
+      <div id="right">
+        <h2>Participants</h2>
+        <div id="videos" class="videos-grid"></div>
       </div>
     </div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // --- Basic elements & socket ---
     const socket = io();
-
-    // Elements
     const usernamePrompt = document.getElementById('username-prompt');
-    const chatContainer = document.getElementById('chat-container');
+    const mainUI = document.getElementById('main');
     const usernameInput = document.getElementById('username');
     const joinBtn = document.getElementById('joinBtn');
+
     const messagesDiv = document.getElementById('messages');
     const messageInput = document.getElementById('messageInput');
     const sendBtn = document.getElementById('sendBtn');
 
+    const startVideoBtn = document.getElementById('startVideoBtn');
+    const stopVideoBtn = document.getElementById('stopVideoBtn');
+    const videoToggle = document.getElementById('videoToggle');
+    const audioToggle = document.getElementById('audioToggle');
+
+    const videosEl = document.getElementById('videos');
+    const adminControls = document.getElementById('adminControls');
+    const adminDisableVideo = document.getElementById('adminDisableVideo');
+    const adminEnableAudio = document.getElementById('adminEnableAudio');
+
     let username = '';
+    let mySocketId = null;
+    let localStream = null;
+    const pcs = {}; // peer connections keyed by remote socket id
+    const remoteVideoEls = {}; // remote video DOM elements keyed by socket id
 
-    // Join chat
-    joinBtn.addEventListener('click', () => {
-      username = usernameInput.value.trim();
-      if (username) {
-        socket.emit('set username', username);
-        usernamePrompt.style.display = 'none';
-        chatContainer.style.display = 'block';
-      }
-    });
+    const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-    // Send message
-    sendBtn.addEventListener('click', sendMessage);
-    messageInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') sendMessage();
-    });
+    // join chat
+    joinBtn.onclick = () => {
+      username = usernameInput.value.trim() || 'guest' + Math.floor(Math.random() * 1000);
+      socket.emit('set username', username);
+      usernamePrompt.style.display = 'none';
+      mainUI.style.display = 'flex';
 
+      // show admin controls if username === 'admin' (you can change logic)
+      if (username.toLowerCase() === 'admin') adminControls.style.display = 'block';
+    };
+
+    // chat messaging
+    sendBtn.onclick = sendMessage;
+    messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
     function sendMessage() {
       const text = messageInput.value.trim();
-      if (text && username) {
-        socket.emit('chat message', text);
-        messageInput.value = '';
+      if (!text) return;
+      socket.emit('chat message', text);
+      messageInput.value = '';
+    }
+
+    socket.on('chat message', (msg) => {
+      appendMessage(`${msg.user}: ${msg.text}`);
+    });
+    socket.on('system message', (msg) => { appendMessage(`* ${msg}`); });
+
+    function appendMessage(text) {
+      const item = document.createElement('div');
+      item.className = 'message';
+      item.textContent = text;
+      messagesDiv.appendChild(item);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // ---------- Video flow ----------
+    startVideoBtn.onclick = startLocalMediaAndJoin;
+    stopVideoBtn.onclick = stopAllMedia;
+
+    videoToggle.addEventListener('change', () => {
+      if (!localStream) return;
+      const vTrack = localStream.getVideoTracks()[0];
+      if (vTrack) vTrack.enabled = videoToggle.checked;
+    });
+    audioToggle.addEventListener('change', () => {
+      if (!localStream) return;
+      const aTrack = localStream.getAudioTracks()[0];
+      if (aTrack) aTrack.enabled = audioToggle.checked;
+    });
+
+    async function startLocalMediaAndJoin() {
+      try {
+        // get media with user's choices (video+audio)
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        addLocalVideoElement();
+        socket.emit('join-room'); // tell server we're ready to connect for video
+        startVideoBtn.style.display = 'none';
+        stopVideoBtn.style.display = 'inline-block';
+      } catch (err) {
+        alert('Failed to access camera/microphone: ' + err.message);
+        console.error(err);
       }
     }
 
-    // Receive chat message
-    socket.on('chat message', (msg) => {
-      const item = document.createElement('div');
-      item.classList.add('message');
-      item.innerHTML = `<strong>${msg.user}:</strong> ${msg.text}`;
-      messagesDiv.appendChild(item);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    function stopAllMedia() {
+      // close peer connections
+      for (const id in pcs) {
+        pcs[id].close();
+        delete pcs[id];
+      }
+      // remove remote video elements
+      for (const id in remoteVideoEls) {
+        remoteVideoEls[id].remove();
+        delete remoteVideoEls[id];
+      }
+      // stop local tracks
+      if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+        localStream = null;
+      }
+      // UI
+      const localEl = document.getElementById('local-' + mySocketId);
+      if (localEl) localEl.remove();
+      startVideoBtn.style.display = 'inline-block';
+      stopVideoBtn.style.display = 'none';
+    }
+
+    function addLocalVideoElement() {
+      // show a small local preview
+      if (!mySocketId) return; // may set after we get socket id
+      let localEl = document.getElementById('local-' + mySocketId);
+      if (!localEl) {
+        localEl = document.createElement('div');
+        localEl.className = 'participant';
+        localEl.id = 'local-' + mySocketId;
+        localEl.innerHTML = `<div class="name">You (${username})</div><video autoplay playsinline muted></video>`;
+        videosEl.prepend(localEl);
+      }
+      const video = localEl.querySelector('video');
+      video.srcObject = localStream;
+      video.muted = true;
+    }
+
+    // ---------- Socket signaling & multi-peer mesh ----------
+    socket.on('connect', () => {
+      mySocketId = socket.id;
     });
 
-    // Receive system message (join/leave)
-    socket.on('system message', (msg) => {
-      const item = document.createElement('div');
-      item.classList.add('system-message');
-      item.textContent = msg;
-      messagesDiv.appendChild(item);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    // When someone joins, server will let others know
+    socket.on('user-joined', async (remoteId) => {
+      // existing participants should create peer connection and offer to the new user
+      if (!localStream) return; // not in video mode
+      await createPeerAndOffer(remoteId);
+    });
+
+    socket.on('all-users', (userIds) => {
+      // when a client joins the room it may receive list of existing users to connect with
+      // this client should create offers to each existing participant
+      (async () => {
+        for (const id of userIds) {
+          if (id === mySocketId) continue;
+          if (!pcs[id]) await createPeerAndOffer(id);
+        }
+      })();
+    });
+
+    async function createPeerAndOffer(remoteId) {
+      const pc = new RTCPeerConnection(servers);
+      pcs[remoteId] = pc;
+
+      // add local tracks
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      // create remote video element
+      createRemoteVideoEl(remoteId);
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) socket.emit('ice-candidate', { to: remoteId, candidate: e.candidate });
+      };
+
+      pc.ontrack = (e) => {
+        const remoteVideo = remoteVideoEls[remoteId].querySelector('video');
+        // some browsers give multiple streams - use first
+        remoteVideo.srcObject = e.streams[0];
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('offer', { to: remoteId, sdp: offer });
+    }
+
+    socket.on('offer', async (data) => {
+      const { from, sdp } = data;
+      // create peer if not exists
+      if (!pcs[from]) {
+        const pc = new RTCPeerConnection(servers);
+        pcs[from] = pc;
+
+        pc.onicecandidate = (e) => {
+          if (e.candidate) socket.emit('ice-candidate', { to: from, candidate: e.candidate });
+        };
+
+        pc.ontrack = (e) => {
+          if (!remoteVideoEls[from]) createRemoteVideoEl(from);
+          const remoteVideo = remoteVideoEls[from].querySelector('video');
+          remoteVideo.srcObject = e.streams[0];
+        };
+
+        // add local tracks if we have them
+        if (localStream) localStream.getTracks().forEach(track => pcs[from].addTrack(track, localStream));
+      }
+
+      await pcs[from].setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pcs[from].createAnswer();
+      await pcs[from].setLocalDescription(answer);
+      socket.emit('answer', { to: from, sdp: answer });
+    });
+
+    socket.on('answer', async (data) => {
+      const { from, sdp } = data;
+      if (!pcs[from]) return;
+      await pcs[from].setRemoteDescription(new RTCSessionDescription(sdp));
+    });
+
+    socket.on('ice-candidate', async (data) => {
+      const { from, candidate } = data;
+      if (pcs[from]) {
+        try {
+          await pcs[from].addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.warn('Failed to add ICE candidate', err);
+        }
+      }
+    });
+
+    socket.on('user-left', (id) => {
+      // remove peer and video
+      if (pcs[id]) {
+        pcs[id].close();
+        delete pcs[id];
+      }
+      if (remoteVideoEls[id]) {
+        remoteVideoEls[id].remove();
+        delete remoteVideoEls[id];
+      }
+    });
+
+    function createRemoteVideoEl(id) {
+      if (remoteVideoEls[id]) return;
+      const el = document.createElement('div');
+      el.className = 'participant';
+      el.id = 'remote-' + id;
+      el.innerHTML = `<div class="name">User: ${id}</div><video autoplay playsinline></video>`;
+      videosEl.appendChild(el);
+      remoteVideoEls[id] = el;
+    }
+
+    // ---------- Admin actions ----------
+    adminDisableVideo.onclick = () => {
+      socket.emit('admin-action', { type: 'disable-video' });
+    };
+    adminEnableAudio.onclick = () => {
+      socket.emit('admin-action', { type: 'enable-audio' });
+    };
+
+    socket.on('admin-action', async (action) => {
+      // client side response to admin commands
+      if (action.type === 'disable-video') {
+        // stop or disable local video track
+        if (localStream) {
+          const v = localStream.getVideoTracks()[0];
+          if (v) {
+            v.enabled = false;
+            // optionally stop it: v.stop();
+          }
+        }
+      } else if (action.type === 'enable-audio') {
+        // We cannot force the browser to grant mic permission silently.
+        // If we already have an audio track, enable it.
+        // Otherwise, request audio permission via getUserMedia (this prompts user).
+        if (localStream) {
+          const a = localStream.getAudioTracks()[0];
+          if (a) {
+            a.enabled = true;
+          } else {
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              // attach audio to existing localStream (or replace)
+              stream.getAudioTracks().forEach(t => localStream.addTrack(t));
+              // update all peer connections with new track
+              for (const id in pcs) {
+                const sender = pcs[id].getSenders().find(s => s.track && s.kind === 'audio');
+                if (!sender) pcs[id].addTrack(stream.getAudioTracks()[0], localStream);
+                else sender.replaceTrack(stream.getAudioTracks()[0]);
+              }
+              // update local UI
+              addLocalVideoElement();
+            } catch (err) {
+              // permission denied or error
+              alert('Cannot enable audio without permission. Please allow microphone access.');
+            }
+          }
+        } else {
+          // not in video/audio mode — prompt to get audio
+          try {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            addLocalVideoElement();
+            socket.emit('join-room'); // join signaling for audio-only
+          } catch (err) {
+            alert('Cannot enable audio without permission. Please allow microphone access.');
+          }
+        }
+      }
+    });
+
+    // ---------- housekeeping ----------
+    socket.on('connect_error', (err) => {
+      console.error('Socket connect error', err);
     });
   </script>
 </body>
