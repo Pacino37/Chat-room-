@@ -7,6 +7,11 @@ const path = require('path');
 // Serve static files from "public"
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Optional root route for Render health check
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 io.on('connection', (socket) => {
   console.log('A user connected');
 
@@ -35,7 +40,9 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = 3000;
+// ✅ Use Render’s dynamic port or fallback to 3000 locally
+const PORT = process.env.PORT || 3000;
+
 http.listen(PORT, () => {
-  console.log(`✅ Server running on http://localhost:${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
