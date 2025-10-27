@@ -1,272 +1,194 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Chat + Video Room</title>
-  <link rel="stylesheet" href="style.css" />
-</head>
-<body>
-  <div id="chat-wrapper">
-    <!-- Authentication Section -->
-    <div id="auth-container">
-      <h2>Join Room</h2>
-      <input id="username" placeholder="Enter your name">
-      <input id="roomId" placeholder="Room name" value="main-room">
-      <button id="joinBtn">Join Room</button>
-      <hr>
-      <input id="adminPass" placeholder="Admin password">
-      <button id="adminLogin">Login as Admin</button>
-    </div>
+// server.js
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 
-    <!-- Main Interface -->
-    <div id="main" style="display:none;">
-      <div id="left">
-        <h2>Chat Room</h2>
-        <div id="messages" class="box"></div>
-        <div id="message-input-area">
-          <input id="messageInput" type="text" placeholder="Type a message..." autocomplete="off" />
-          <button id="sendBtn">Send</button>
-        </div>
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
 
-        <div id="controls" class="box">
-          <button id="startVideoBtn">🎥 Start Video</button>
-          <button id="stopVideoBtn" style="display:none;">⛔ Stop Video</button>
-          <button id="raiseHandBtn">✋ Raise Hand</button>
-          <button id="muteBtn">🔇 Mute/Unmute</button>
-          <button id="videoBtn">📷 Video On/Off</button>
-          <label><input id="videoToggle" type="checkbox" checked/> Video</label>
-          <label><input id="audioToggle" type="checkbox" checked/> Audio</label>
-        </div>
+// Serve static client files from public/
+app.use(express.static('public'));
 
-        <!-- Admin controls -->
-        <div id="adminControls" class="box" style="display:none;">
-          <h3>Administrator</h3>
-          <button id="adminDisableVideo">Disable All Video</button>
-          <button id="adminEnableAudio">Enable Audio</button>
-          <button id="muteAllBtn">Mute All</button>
-          <ul id="userList"></ul>
-        </div>
-      </div>
+// In-memory store (for demo; use a DB for production)
+const rooms = {}; // roomId -> { users: Map(socketId -> {id, username, muted, isAdmin}) , adminPassword }
+const DEFAULT_ADMIN_PASSWORD = 'admin123';
 
-      <div id="right">
-        <h2>Participants</h2>
-        <div id="videos" class="videos-grid"></div>
-      </div>
-    </div>
-  </div>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    const socket = io();
-    const usernameInput = document.getElementById('username');
-    const roomIdInput = document.getElementById('roomId');
-    const joinBtn = document.getElementById('joinBtn');
-    const adminPassInput = document.getElementById('adminPass');
-    const adminLoginBtn = document.getElementById('adminLogin');
-    const authContainer = document.getElementById('auth-container');
-    const mainUI = document.getElementById('main');
-    const messagesDiv = document.getElementById('messages');
-    const messageInput = document.getElementById('messageInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const videosEl = document.getElementById('videos');
-    const adminControls = document.getElementById('adminControls');
-    const adminDisableVideo = document.getElementById('adminDisableVideo');
-    const adminEnableAudio = document.getElementById('adminEnableAudio');
-    const muteAllBtn = document.getElementById('muteAllBtn');
-    const userList = document.getElementById('userList');
-
-    const startVideoBtn = document.getElementById('startVideoBtn');
-    const stopVideoBtn = document.getElementById('stopVideoBtn');
-    const raiseHandBtn = document.getElementById('raiseHandBtn');
-    const muteBtn = document.getElementById('muteBtn');
-    const videoBtn = document.getElementById('videoBtn');
-    const videoToggle = document.getElementById('videoToggle');
-    const audioToggle = document.getElementById('audioToggle');
-
-    let username = '';
-    let roomId = '';
-    let mySocketId = null;
-    let isAdmin = false;
-    let localStream = null;
-    const pcs = {};
-    const remoteVideoEls = {};
-    const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-
-    // -------- JOIN ROOM --------
-    joinBtn.onclick = () => {
-      username = usernameInput.value.trim() || 'guest' + Math.floor(Math.random() * 1000);
-      roomId = roomIdInput.value.trim() || 'main-room';
-      socket.emit('set username', { username, roomId });
-      authContainer.style.display = 'none';
-      mainUI.style.display = 'flex';
+function ensureRoom(roomId) {
+  if (!rooms[roomId]) {
+    rooms[roomId] = {
+      users: new Map(),
+      adminPassword: DEFAULT_ADMIN_PASSWORD
     };
+  }
+  return rooms[roomId];
+}
 
-    adminLoginBtn.onclick = () => {
-      if (adminPassInput.value === 'admin123') { // change password as needed
-        isAdmin = true;
-        authContainer.style.display = 'none';
-        mainUI.style.display = 'flex';
-        adminControls.style.display = 'block';
-        socket.emit('admin-login', roomId);
-      } else alert('Wrong admin password');
-    };
+io.on('connection', (socket) => {
+  console.log('Socket connected:', socket.id);
 
-    // -------- CHAT --------
-    sendBtn.onclick = sendMessage;
-    messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
-    function sendMessage() {
-      const text = messageInput.value.trim();
-      if (!text) return;
-      socket.emit('chat message', { text, roomId });
-      messageInput.value = '';
+  socket.on('join-room', ({ roomId = 'main-room', username = 'guest', muted = false }) => {
+    roomId = String(roomId);
+    username = String(username);
+    const room = ensureRoom(roomId);
+
+    socket.join(roomId);
+    room.users.set(socket.id, { id: socket.id, username, muted: !!muted, isAdmin: false });
+
+    // Reply to the joining client
+    socket.emit('joined-success', { id: socket.id, room: roomId, username });
+
+    // Inform this client about other users (ids) - useful for some client flows
+    const otherIds = Array.from(room.users.keys()).filter(id => id !== socket.id);
+    socket.emit('all-users', otherIds);
+
+    // Broadcast updated user list to room
+    const usersList = Array.from(room.users.values()).map(u => ({ id: u.id, username: u.username }));
+    io.in(roomId).emit('user-list', usersList);
+
+    // Notify others someone joined
+    socket.to(roomId).emit('user-joined', { id: socket.id, username });
+
+    console.log(`${username} joined ${roomId} (${socket.id})`);
+  });
+
+  socket.on('admin-login', ({ roomId = 'main-room', password = '' }) => {
+    roomId = String(roomId);
+    const room = ensureRoom(roomId);
+    const success = password === room.adminPassword;
+    if (success) {
+      // mark the socket user as admin in room storage (if joined already)
+      const user = room.users.get(socket.id) || {};
+      user.isAdmin = true;
+      room.users.set(socket.id, user);
+      socket.join(`${roomId}-admins`); // optional separate admin room
+      socket.emit('admin-login-result', { success: true, message: 'Welcome, admin' });
+
+      // send updated list (to show admin controls)
+      const usersList = Array.from(room.users.values()).map(u => ({ id: u.id, username: u.username }));
+      io.in(roomId).emit('user-list', usersList);
+      console.log(`Admin login success for ${socket.id} in ${roomId}`);
+    } else {
+      socket.emit('admin-login-result', { success: false, message: 'Invalid password' });
+      console.log(`Admin login failed for ${socket.id} in ${roomId}`);
     }
-    socket.on('chat message', (msg) => appendMessage(`${msg.user}: ${msg.text}`));
-    socket.on('system message', (msg) => appendMessage(`* ${msg}`));
-    function appendMessage(text) {
-      const div = document.createElement('div');
-      div.className = 'message';
-      div.textContent = text;
-      messagesDiv.appendChild(div);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
+  });
 
-    // -------- VIDEO CONTROL --------
-    startVideoBtn.onclick = startLocalMediaAndJoin;
-    stopVideoBtn.onclick = stopAllMedia;
-    videoToggle.onchange = () => { if (localStream) localStream.getVideoTracks()[0].enabled = videoToggle.checked; };
-    audioToggle.onchange = () => { if (localStream) localStream.getAudioTracks()[0].enabled = audioToggle.checked; };
+  // Called by client when they have local media and are ready
+  socket.on('ready-for-call', ({ roomId = 'main-room', username = '' }) => {
+    // server currently does not need to do extra work here; leave for extensibility
+    // Could notify others this client is ready
+    socket.to(roomId).emit('system message', `${username || socket.id} is ready for call`);
+  });
 
-    muteBtn.onclick = () => {
-      if (localStream) {
-        const track = localStream.getAudioTracks()[0];
-        if (track) track.enabled = !track.enabled;
+  // Chat
+  socket.on('chat message', ({ text, roomId, user }) => {
+    io.in(roomId).emit('chat message', { user: user || 'guest', text });
+  });
+
+  // Raise hand
+  socket.on('raise-hand', ({ username, roomId, id }) => {
+    io.in(roomId).emit('raise-hand', { username, id });
+  });
+
+  // Signaling relay: offer, answer, ice-candidate
+  socket.on('offer', ({ to, sdp }) => {
+    if (!to) return;
+    io.to(to).emit('offer', { from: socket.id, sdp });
+  });
+
+  socket.on('answer', ({ to, sdp }) => {
+    if (!to) return;
+    io.to(to).emit('answer', { from: socket.id, sdp });
+  });
+
+  socket.on('ice-candidate', ({ to, candidate }) => {
+    if (!to) return;
+    io.to(to).emit('ice-candidate', { from: socket.id, candidate });
+  });
+
+  // Admin actions - server routes actions to appropriate sockets
+  socket.on('admin-action', (action) => {
+    try {
+      const { type, target, roomId } = action || {};
+      if (!roomId) return;
+      const room = ensureRoom(roomId);
+
+      // Verify sender is admin in this room
+      const sender = room.users.get(socket.id);
+      if (!sender || !sender.isAdmin) {
+        socket.emit('system message', 'Admin action denied: not an admin');
+        return;
       }
-    };
-    videoBtn.onclick = () => {
-      if (localStream) {
-        const track = localStream.getVideoTracks()[0];
-        if (track) track.enabled = !track.enabled;
+
+      // Server-side handling and broadcasting:
+      if (type === 'mute-all') {
+        // broadcast to room instructing clients to mute
+        io.in(roomId).emit('admin-action', { type: 'mute-all' });
+      } else if (type === 'disable-video') {
+        io.in(roomId).emit('admin-action', { type: 'disable-video' });
+      } else if (type === 'enable-audio') {
+        io.in(roomId).emit('admin-action', { type: 'enable-audio' });
+      } else if (type === 'mute-user' && target) {
+        io.to(target).emit('admin-action', { type: 'mute-user', target });
+      } else if (type === 'unmute-user' && target) {
+        io.to(target).emit('admin-action', { type: 'unmute-user', target });
+      } else if (type === 'disable-video-user' && target) {
+        io.to(target).emit('admin-action', { type: 'disable-video-user', target });
+      } else {
+        // unrecognized - broadcast as-is to room for custom clients
+        io.in(roomId).emit('admin-action', action);
       }
-    };
 
-    raiseHandBtn.onclick = () => {
-      socket.emit('raise-hand', { username, roomId });
-    };
-    socket.on('raise-hand', (data) => appendMessage(`✋ ${data.username} raised their hand.`));
-
-    async function startLocalMediaAndJoin() {
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        addLocalVideoElement();
-        socket.emit('join-room', roomId);
-        startVideoBtn.style.display = 'none';
-        stopVideoBtn.style.display = 'inline-block';
-      } catch (err) {
-        alert('Camera/microphone access denied.');
+      // optionally update server-side user state for target (muted flags)
+      if (type === 'mute-user' && target) {
+        const t = room.users.get(target);
+        if (t) t.muted = true;
+      } else if (type === 'unmute-user' && target) {
+        const t = room.users.get(target);
+        if (t) t.muted = false;
+      } else if (type === 'mute-all') {
+        room.users.forEach(u => u.muted = true);
       }
+
+    } catch (err) {
+      console.error('admin-action error:', err);
     }
+  });
 
-    function stopAllMedia() {
-      Object.values(pcs).forEach(pc => pc.close());
-      Object.values(remoteVideoEls).forEach(v => v.remove());
-      if (localStream) localStream.getTracks().forEach(t => t.stop());
-      localStream = null;
-      const localEl = document.getElementById('local-' + mySocketId);
-      if (localEl) localEl.remove();
-      startVideoBtn.style.display = 'inline-block';
-      stopVideoBtn.style.display = 'none';
-    }
-
-    function addLocalVideoElement() {
-      if (!mySocketId) return;
-      let el = document.getElementById('local-' + mySocketId);
-      if (!el) {
-        el = document.createElement('div');
-        el.className = 'participant';
-        el.id = 'local-' + mySocketId;
-        el.innerHTML = `<div class="name">You (${username})</div><video autoplay playsinline muted></video>`;
-        videosEl.prepend(el);
-      }
-      el.querySelector('video').srcObject = localStream;
-    }
-
-    // -------- WEBRTC SIGNALING --------
-    socket.on('connect', () => mySocketId = socket.id);
-
-    socket.on('all-users', async (ids) => {
-      for (const id of ids) {
-        if (id !== mySocketId) await createPeerAndOffer(id);
-      }
-    });
-
-    socket.on('user-joined', async (id) => { await createPeerAndOffer(id); });
-
-    async function createPeerAndOffer(remoteId) {
-      const pc = new RTCPeerConnection(servers);
-      pcs[remoteId] = pc;
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-      createRemoteVideoEl(remoteId);
-      pc.onicecandidate = e => { if (e.candidate) socket.emit('ice-candidate', { to: remoteId, candidate: e.candidate }); };
-      pc.ontrack = e => remoteVideoEls[remoteId].querySelector('video').srcObject = e.streams[0];
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('offer', { to: remoteId, sdp: offer });
-    }
-
-    socket.on('offer', async ({ from, sdp }) => {
-      const pc = new RTCPeerConnection(servers);
-      pcs[from] = pc;
-      pc.onicecandidate = e => { if (e.candidate) socket.emit('ice-candidate', { to: from, candidate: e.candidate }); };
-      pc.ontrack = e => remoteVideoEls[from].querySelector('video').srcObject = e.streams[0];
-      if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('answer', { to: from, sdp: answer });
-    });
-
-    socket.on('answer', async ({ from, sdp }) => {
-      if (pcs[from]) await pcs[from].setRemoteDescription(new RTCSessionDescription(sdp));
-    });
-
-    socket.on('ice-candidate', async ({ from, candidate }) => {
-      if (pcs[from]) await pcs[from].addIceCandidate(new RTCIceCandidate(candidate));
-    });
-
-    socket.on('user-left', id => {
-      if (pcs[id]) pcs[id].close();
-      delete pcs[id];
-      if (remoteVideoEls[id]) remoteVideoEls[id].remove();
-      delete remoteVideoEls[id];
-    });
-
-    function createRemoteVideoEl(id) {
-      if (remoteVideoEls[id]) return;
-      const el = document.createElement('div');
-      el.className = 'participant';
-      el.id = 'remote-' + id;
-      el.innerHTML = `<div class="name">User: ${id}</div><video autoplay playsinline></video>`;
-      videosEl.appendChild(el);
-      remoteVideoEls[id] = el;
-    }
-
-    // -------- ADMIN ACTIONS --------
-    adminDisableVideo.onclick = () => socket.emit('admin-action', { type: 'disable-video', roomId });
-    adminEnableAudio.onclick = () => socket.emit('admin-action', { type: 'enable-audio', roomId });
-    muteAllBtn.onclick = () => socket.emit('admin-action', { type: 'mute-all', roomId });
-
-    socket.on('admin-action', async (action) => {
-      if (action.type === 'disable-video' && localStream) {
-        const v = localStream.getVideoTracks()[0]; if (v) v.enabled = false;
-      } else if (action.type === 'mute-all' && localStream) {
-        const a = localStream.getAudioTracks()[0]; if (a) a.enabled = false;
-      } else if (action.type === 'enable-audio' && localStream) {
-        const a = localStream.getAudioTracks()[0]; if (a) a.enabled = true;
+  // When someone leaves / disconnects
+  socket.on('disconnect', () => {
+    console.log('Socket disconnect:', socket.id);
+    // remove from any room
+    Object.keys(rooms).forEach(roomId => {
+      const room = rooms[roomId];
+      if (room.users.has(socket.id)) {
+        const username = room.users.get(socket.id).username;
+        room.users.delete(socket.id);
+        // notify remaining clients
+        socket.to(roomId).emit('user-left', socket.id);
+        const usersList = Array.from(room.users.values()).map(u => ({ id: u.id, username: u.username }));
+        io.in(roomId).emit('user-list', usersList);
+        console.log(`${username || socket.id} removed from ${roomId}`);
       }
     });
+  });
 
-    socket.on('connect_error', err => console.error('Connection error', err));
-  </script>
-</body>
-</html>
+  // Optional: allow a client to explicitly leave a room
+  socket.on('leave-room', ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    if (room.users.has(socket.id)) {
+      room.users.delete(socket.id);
+      socket.leave(roomId);
+      socket.to(roomId).emit('user-left', socket.id);
+      const usersList = Array.from(room.users.values()).map(u => ({ id: u.id, username: u.username }));
+      io.in(roomId).emit('user-list', usersList);
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
+});
