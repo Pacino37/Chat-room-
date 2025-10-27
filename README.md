@@ -1,2 +1,2 @@
-# Chat-room-barter-trade
-Market area, Barter trading
+# Chat-room
+A simple web-based chatroom implemented using JavaScript, HTML, and CSS.
